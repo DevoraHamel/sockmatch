@@ -1,15 +1,14 @@
 # app.py
 import os
-import io
 from PIL import Image, ImageOps
 import numpy as np
 from sklearn.cluster import KMeans
 import streamlit as st
-import openai
 from sklearn.metrics.pairwise import cosine_similarity
+from openai import OpenAI
 
 # ----- Configure OpenAI -----
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 TEXT_MODEL = "gpt-4o-mini"
 EMBED_MODEL = "text-embedding-3-small"
 
@@ -50,6 +49,7 @@ def build_feature_summary(colors, edge_d):
     texture = "textured" if edge_d > 0.06 else "smooth"
     return f"{color_desc}{other}; overall vibe: {texture} (edge={edge_d:.3f})"
 
+# ----- OpenAI helper wrappers -----
 def generate_descriptor_text(feature_summary: str):
     prompt = (
         "You are a playful but kind stylist and dating-app copywriter for socks. "
@@ -58,9 +58,9 @@ def generate_descriptor_text(feature_summary: str):
         "Example: 'Bright blue stripes, playful and adventurous.'\n\n"
         f"Feature summary: {feature_summary}\n\nDescriptor:"
     )
-    resp = openai.ChatCompletion.create(
+    resp = client.chat.completions.create(
         model=TEXT_MODEL,
-        messages=[{"role":"user","content":prompt}],
+        messages=[{"role": "user", "content": prompt}],
         max_tokens=60,
         temperature=0.8,
     )
@@ -73,18 +73,19 @@ def generate_match_story(desc_a: str, desc_b: str, score_pct: float):
         "based on their descriptors. Keep it 1-2 sentences, playful, and family-friendly. "
         f"Sock A: {desc_a}\nSock B: {desc_b}\nMatch score: {score_pct:.0f}%\nStory:"
     )
-    resp = openai.ChatCompletion.create(
+    resp = client.chat.completions.create(
         model=TEXT_MODEL,
-        messages=[{"role":"user","content":prompt}],
+        messages=[{"role": "user", "content": prompt}],
         max_tokens=80,
         temperature=0.9,
     )
     return resp.choices[0].message.content.strip()
 
 def get_embedding(text: str):
-    resp = openai.Embedding.create(model=EMBED_MODEL, input=text)
+    resp = client.embeddings.create(model=EMBED_MODEL, input=text)
     return np.array(resp.data[0].embedding, dtype=float)
 
+# ----- Streamlit UI -----
 st.set_page_config(page_title="SockMatch 🧦", layout="centered")
 st.title("SockMatch — find your sock's sole mate")
 
@@ -100,8 +101,10 @@ if st.button("Find My Match"):
     else:
         img_a = load_image(file_a)
         img_b = load_image(file_b)
-        st.image([img_a, img_b], caption=["Sock A","Sock B"], width=180)
 
+        st.image([img_a, img_b], caption=["Sock A", "Sock B"], width=180)
+
+        # Analyze both socks
         colors_a = get_dominant_colors(img_a, k=3)
         colors_b = get_dominant_colors(img_b, k=3)
         edge_a = edge_density(img_a)
@@ -113,6 +116,7 @@ if st.button("Find My Match"):
         st.write("Sock A:", feat_a)
         st.write("Sock B:", feat_b)
 
+        # AI descriptions
         with st.spinner("Describing socks..."):
             desc_a = generate_descriptor_text(feat_a)
             desc_b = generate_descriptor_text(feat_b)
@@ -121,15 +125,17 @@ if st.button("Find My Match"):
         st.write("A →", desc_a)
         st.write("B →", desc_b)
 
+        # Embeddings + similarity
         emb_a = get_embedding(desc_a)
         emb_b = get_embedding(desc_b)
-        from sklearn.metrics.pairwise import cosine_similarity
-        score = float(cosine_similarity([emb_a],[emb_b])[0][0])
+        score = float(cosine_similarity([emb_a], [emb_b])[0][0])
         pct = max(0, min(100, (score + 1) / 2 * 100))
 
+        # Generate love story
         with st.spinner("Writing the matchmaking story..."):
             story = generate_match_story(desc_a, desc_b, pct)
 
         st.markdown("---")
-        st.header(f"Match Score: {pct:.0f}%")
+        st.header(f"💞 Match Score: {pct:.0f}%")
         st.subheader(story)
+        st.caption("Made with love — and a bit of AI ✨")
